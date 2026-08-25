@@ -1391,3 +1391,12 @@ endmenu # "CPU Power Management"
 source "arch/riscv/kvm/Kconfig"
 
 source "drivers/acpi/Kconfig"
+
+config RISCV_AMO_EMULATION
+	bool "Emulate AMO/LR/SC on non-atomic memory (RP2350 PSRAM)"
+	depends on !MMU
+	help
+	  RP2350 supports AMO/LR/SC only on main SRAM; a kernel running
+	  from PSRAM faults on its first atomic operation.  Enable this
+	  to emulate the instructions in the trap handler so the kernel
+	  can run with code/data in PSRAM.

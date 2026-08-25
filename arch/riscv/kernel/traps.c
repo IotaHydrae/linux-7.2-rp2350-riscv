@@ -27,6 +27,7 @@
 #include <asm/bug.h>
 #include <asm/cfi.h>
 #include <asm/csr.h>
+#include <asm/amo-emu.h>
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/syscall.h>
@@ -132,6 +133,9 @@ void do_trap(struct pt_regs *regs, int signo, int code, unsigned long addr)
 static void do_trap_error(struct pt_regs *regs, int signo, int code,
 	unsigned long addr, const char *str)
 {
+	if (try_amo_emulation(regs))
+		return;
+
 	current->thread.bad_cause = regs->cause;
 
 	if (user_mode(regs)) {
