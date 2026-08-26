@@ -181,9 +181,21 @@
 		       cas_prepend, cas_append,				\
 		       r, p, co, o, n)					\
 ({									\
+	/*								\
+	 * RP2350 PSRAM port: LR/SC do not fault on PSRAM -- per the	\
+	 * datasheet (2.1.6 Global Exclusive Monitor) exclusive accesses	\
+	 * outside SRAM are treated as normal accesses with the		\
+	 * exclusivity failing, so sc.w silently returns failure and	\
+	 * every LR/SC cmpxchg loop spins forever.  amocas.w is an AMO,	\
+	 * which does fault and is emulated by CONFIG_RISCV_AMO_EMULATION.\
+	 * Force the amocas path (it is compiled in whenever ZACAS is	\
+	 * available) instead of waiting for runtime hwcap, which is not	\
+	 * parsed before the first printk.				\
+	 */								\
 	if (IS_ENABLED(CONFIG_RISCV_ISA_ZACAS) &&			\
 	    IS_ENABLED(CONFIG_TOOLCHAIN_HAS_ZACAS) &&			\
-	    riscv_has_extension_unlikely(RISCV_ISA_EXT_ZACAS)) {	\
+	    (IS_ENABLED(CONFIG_RISCV_AMO_EMULATION) ||			\
+	     riscv_has_extension_unlikely(RISCV_ISA_EXT_ZACAS))) {	\
 		r = o;							\
 									\
 		__asm__ __volatile__ (					\

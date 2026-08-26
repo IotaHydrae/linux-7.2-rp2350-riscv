@@ -5,10 +5,19 @@
  *
  * RP2350's Hazard3 cores implement AMOs as an exclusive read/write pair,
  * and the Global Exclusive Monitor only supports main SRAM (RP2350
- * datasheet section 3.1.5).  Any AMO/LR/SC targeting the PSRAM window
- * (0x11000000) raises a Store/AMO fault (mcause 6/7).  Because this
+ * datasheet section 2.1.6).  An AMO targeting the PSRAM window
+ * (0x11000000) raises a Store/AMO fault (mcause 6/7), but LR/SC do NOT
+ * fault: the monitor treats exclusive accesses outside SRAM as normal
+ * accesses and reports exclusivity failure, so sc.w silently returns a
+ * non-zero value and every LR/SC retry loop spins forever.  Because this
  * kernel runs from PSRAM, its first atomic operation (in
  * boot_cpu_init()->set_cpu_online()) faults before any console output.
+ *
+ * To get around the LR/SC behaviour, cmpxchg.h is patched (under
+ * CONFIG_RISCV_AMO_EMULATION) to use amocas.w (Zacas) for 32-bit
+ * compare-and-swap.  amocas.w is an AMO encoding, so it faults -- and
+ * since Hazard3 has no Zacas decoder it actually raises an illegal
+ * instruction (mcause 2), which this emulator also handles.
  *
  * This trap-path emulator decodes the faulting instruction and performs
  * the read-modify-write with plain loads/stores.  Atomicity is safe on
@@ -20,6 +29,7 @@
  *    store between LR and SC does not invalidate the reservation.
  *  - Only the PSRAM window is emulated; other faulting AMOs fall through
  *    to the normal die() path.
+ *
  */
 
 #include <linux/kernel.h>
@@ -30,6 +40,7 @@
 #include <asm/csr.h>
 
 #define AMO_OPCODE	0x2f
+#define AMO_FUNCT5_AMOCAS	0x05	/* Zacas amocas.w (reserved in base A) */
 #define PSRAM_BASE	0x11000000UL
 #define PSRAM_SIZE	0x00800000UL
 #define RES_GRANULE	16
@@ -96,24 +107,48 @@ bool try_amo_emulation(struct pt_regs *regs)
 	unsigned int funct5, rs1num, rs2num, rdnum;
 	unsigned long *r;
 	unsigned long addr, rs2, old, val;
+	bool illegal = (regs->cause == EXC_INST_ILLEGAL);
 
-	/* Store/AMO access fault (6), Store/AMO page fault (7), store page fault (15) */
-	if (regs->cause != EXC_STORE_MISALIGNED &&
+	/* Store/AMO faults (6/7/15) cover real AMOs on PSRAM.  Hazard3 has
+	 * no Zacas decoder, so amocas.w arrives as an illegal-instruction
+	 * trap (2) instead -- only that case is interesting from there. */
+	if (!illegal &&
+	    regs->cause != EXC_STORE_MISALIGNED &&
 	    regs->cause != EXC_STORE_ACCESS &&
 	    regs->cause != EXC_STORE_PAGE_FAULT)
 		return false;
 
-	/* Fetch the faulting instruction (kernel text lives in readable PSRAM). */
+	/* Fetch the faulting instruction (kernel text lives in readable PSRAM).
+	 *
+	 * With the C (compressed) extension a 32-bit instruction may start at
+	 * any 16-bit boundary, so mepc can be 2 mod 4 (e.g. an AMO right after
+	 * a c.beqz).  RP2350's Hazard3 returns 0xf0000000 for misaligned 32-bit
+	 * data loads, so never do a misaligned u32 read here: assemble the word
+	 * from two 16-bit halfwords, both of which are 2-byte aligned.
+	 * A 16-bit compressed instruction (first halfword low bits != 11) is
+	 * never an AMO/LR/SC and is refused right away. */
 	if (!addr_in_psram(regs->epc))
 		return false;
-	insn = *(u32 *)regs->epc;
+	{
+		u16 lo = *(u16 *)regs->epc;
+		u16 hi = *(u16 *)(regs->epc + 2);
+
+		insn = (u32)lo | ((u32)hi << 16);
+		if ((insn & 0x3) != 0x3)
+			return false;	/* 16-bit compressed instruction */
+	}
 	if ((insn & 0x7f) != AMO_OPCODE)
-		return false; /* not an AMO/LR/SC -> normal fault handling */
+		return false;
 
 	funct5 = (insn >> 27) & 0x1f;
 	rs1num = (insn >> 15) & 0x1f;
 	rs2num = (insn >> 20) & 0x1f;
 	rdnum  = (insn >> 7) & 0x1f;
+
+	/* From an illegal-instruction trap we only ever emulate amocas.w;
+	 * any other illegal instruction falls through to the normal die(). */
+	if (illegal && funct5 != AMO_FUNCT5_AMOCAS)
+		return false;
 
 	r = reg_by_num(regs, rs1num);
 	addr = r ? *r : 0;
@@ -143,6 +178,26 @@ bool try_amo_emulation(struct pt_regs *regs)
 		emu_res_addr = ~0UL;
 		if (rdnum)
 			*reg_by_num(regs, rdnum) = val;
+		regs->epc += 4;
+		return true;
+	}
+
+	if (funct5 == AMO_FUNCT5_AMOCAS) {	/* amocas.w rd, rs2, (rs1) */
+		unsigned long expected;
+		unsigned long *rdp = reg_by_num(regs, rdnum);
+
+		/* Zacas amocas.w requires funct3=010 (word); rv32 has no .d */
+		if (((insn >> 12) & 0x7) != 0x2)
+			return false;
+
+		/* rd is both input (expected value) and output (old value):
+		 * if memory equals expected, rs2 is stored; rd gets old. */
+		expected = rdp ? *rdp : 0;
+		old = *(volatile u32 *)addr;
+		if (old == expected)
+			*(volatile u32 *)addr = rs2;
+		if (rdp)
+			*rdp = old;
 		regs->epc += 4;
 		return true;
 	}
