@@ -47,7 +47,7 @@ config SERIAL_AMBA_PL010_CONSOLE
 
 config SERIAL_AMBA_PL011
 	tristate "ARM AMBA PL011 serial port support"
-	depends on ARM_AMBA
+	depends on ARM_AMBA || RISCV
 	select SERIAL_CORE
 	help
 	  This selects the ARM(R) AMBA(R) PrimeCell PL011 UART.  If you have
