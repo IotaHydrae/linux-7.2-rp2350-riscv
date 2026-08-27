@@ -27,7 +27,6 @@
 #include <asm/acpi.h>
 #include <asm/alternative.h>
 #include <asm/cacheflush.h>
-#include <asm/clint.h>
 #include <asm/cpufeature.h>
 #include <asm/early_ioremap.h>
 #include <asm/pgtable.h>
@@ -309,21 +308,6 @@ extern void __init init_rt_signal_env(void);
 
 void __init setup_arch(char **cmdline_p)
 {
-	/*
-	 * TEMPORARY RP2350 port workaround (revert in S3-02 when a proper
-	 * clint DT node + driver land): the SIO MTIME (0xd0000000 + 0x1b0)
-	 * is enabled at reset but counts the system tick generator, which is
-	 * OFF by default (TICKS_PROC0_CTRL reset = 0).  Force FULLSPEED so
-	 * MTIME counts the 150 MHz system clock, and point clint_time_val at
-	 * it.  Without this, get_cycles() reads address 0 (garbage, no fault
-	 * on RP2350) and the first udelay()/__delay() spins forever.
-	 * Note: with FULLSPEED the timebase is 150 MHz; a future clint node
-	 * must use timebase-frequency = <150000000> (or switch MTIME back to
-	 * the 1 MHz tick generator and use <1000000>).
-	 */
-	writel(0x0000000f, (void __iomem *)0xd00001a4);	/* MTIME_CTRL: EN|FULLSPEED|DBGPAUSE */
-	clint_time_val = (u64 __iomem *)0xd00001b0;	/* SIO_MTIME low half */
-
 	parse_dtb();
 	setup_initial_init_mm(_stext, _etext, _edata, _end);
 
