@@ -210,6 +210,28 @@ ATOMIC_OPS(xor, xor, i)
 		: "memory");						\
 })
 
+#ifdef CONFIG_RISCV_AMO_EMULATION
+/*
+ * RP2350 PSRAM port: LR/SC silently fail outside SRAM (datasheet 2.1.6),
+ * so any LR/SC loop spins forever.  Re-implement the conditional atomics
+ * with arch_cmpxchg(), which is forced to amocas.w (an AMO encoding that
+ * faults and is emulated by CONFIG_RISCV_AMO_EMULATION).  This is
+ * required to provide a full barrier on success.
+ */
+static __always_inline int arch_atomic_fetch_add_unless(atomic_t *v, int a, int u)
+{
+	int prev, new;
+
+	do {
+		prev = READ_ONCE(v->counter);
+		if (prev == u)
+			break;
+		new = prev + a;
+	} while (arch_cmpxchg(&v->counter, prev, new) != prev);
+
+	return prev;
+}
+#else
 /* This is required to provide a full barrier on success. */
 static __always_inline int arch_atomic_fetch_add_unless(atomic_t *v, int a, int u)
 {
@@ -219,6 +241,7 @@ static __always_inline int arch_atomic_fetch_add_unless(atomic_t *v, int a, int 
 
 	return prev;
 }
+#endif
 #define arch_atomic_fetch_add_unless arch_atomic_fetch_add_unless
 
 #ifndef CONFIG_GENERIC_ATOMIC64
@@ -249,6 +272,21 @@ static __always_inline s64 arch_atomic64_fetch_add_unless(atomic64_t *v, s64 a, 
 		: "memory");						\
 })
 
+#ifdef CONFIG_RISCV_AMO_EMULATION
+static __always_inline bool arch_atomic_inc_unless_negative(atomic_t *v)
+{
+	int prev, new;
+
+	do {
+		prev = READ_ONCE(v->counter);
+		if (prev < 0)
+			return false;
+		new = prev + 1;
+	} while (arch_cmpxchg(&v->counter, prev, new) != prev);
+
+	return true;
+}
+#else
 static __always_inline bool arch_atomic_inc_unless_negative(atomic_t *v)
 {
 	int prev, rc;
@@ -257,6 +295,7 @@ static __always_inline bool arch_atomic_inc_unless_negative(atomic_t *v)
 
 	return !(prev < 0);
 }
+#endif
 
 #define arch_atomic_inc_unless_negative arch_atomic_inc_unless_negative
 
@@ -275,6 +314,21 @@ static __always_inline bool arch_atomic_inc_unless_negative(atomic_t *v)
 		: "memory");						\
 })
 
+#ifdef CONFIG_RISCV_AMO_EMULATION
+static __always_inline bool arch_atomic_dec_unless_positive(atomic_t *v)
+{
+	int prev, new;
+
+	do {
+		prev = READ_ONCE(v->counter);
+		if (prev > 0)
+			return true;
+		new = prev - 1;
+	} while (arch_cmpxchg(&v->counter, prev, new) != prev);
+
+	return false;
+}
+#else
 static __always_inline bool arch_atomic_dec_unless_positive(atomic_t *v)
 {
 	int prev, rc;
@@ -283,6 +337,7 @@ static __always_inline bool arch_atomic_dec_unless_positive(atomic_t *v)
 
 	return !(prev > 0);
 }
+#endif
 
 #define arch_atomic_dec_unless_positive arch_atomic_dec_unless_positive
 
@@ -301,6 +356,21 @@ static __always_inline bool arch_atomic_dec_unless_positive(atomic_t *v)
 		: "memory");						\
 })
 
+#ifdef CONFIG_RISCV_AMO_EMULATION
+static __always_inline int arch_atomic_dec_if_positive(atomic_t *v)
+{
+	int prev, new;
+
+	do {
+		prev = READ_ONCE(v->counter);
+		if (prev <= 0)
+			return prev - 1;
+		new = prev - 1;
+	} while (arch_cmpxchg(&v->counter, prev, new) != prev);
+
+	return new;
+}
+#else
 static __always_inline int arch_atomic_dec_if_positive(atomic_t *v)
 {
        int prev, rc;
@@ -309,6 +379,7 @@ static __always_inline int arch_atomic_dec_if_positive(atomic_t *v)
 
 	return prev - 1;
 }
+#endif
 
 #define arch_atomic_dec_if_positive arch_atomic_dec_if_positive
 
