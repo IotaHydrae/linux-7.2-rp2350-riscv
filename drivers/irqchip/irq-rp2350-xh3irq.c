@@ -37,10 +37,12 @@
 
 #define RVCSR_MEIEA	0xbe0
 #define RVCSR_MEINEXT	0xbe4
+#define RVCSR_MEICONTEXT	0xbe5
 
 #define MEINEXT_NOIRQ		BIT(31)
 #define MEINEXT_IRQ_MASK	0x7fc
 #define MEINEXT_UPDATE		BIT(0)
+#define MEICONTEXT_CLEARTS	BIT(1)
 
 static struct irq_domain *xh3irq_domain;
 
@@ -64,8 +66,20 @@ static struct irq_chip xh3irq_chip = {
 static void xh3irq_handle_irq(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
+	unsigned long meicontext;
 
 	chained_irq_enter(chip, desc);
+
+	/*
+	 * Datasheet 3.8.6.1.5: entering MIP.MEIP pushes the PREEMPT priority
+	 * stack and sets MRETEIRQ; mret pops it only if MRETEIRQ is still set.
+	 * Any non-MEIP trap (e.g. the 1ms MTIP timer) clears MRETEIRQ, so
+	 * without a manual save/restore the stack never pops and PREEMPT
+	 * stays at 0x10 (above every IRQ priority), silently killing all
+	 * further external interrupts.  Save MEICONTEXT on entry (with
+	 * CLEARTS to fold in mtie/msie) and restore it before leaving.
+	 */
+	meicontext = csr_read_set(RVCSR_MEICONTEXT, MEICONTEXT_CLEARTS);
 
 	/* Sample the highest-priority pending IRQ and let the hardware
 	 * update MEICONTEXT in the same instruction (csrrs).  MSB set
@@ -100,6 +114,8 @@ static void xh3irq_handle_irq(struct irq_desc *desc)
 
 		generic_handle_domain_irq(xh3irq_domain, irq);
 	}
+
+	csr_write(RVCSR_MEICONTEXT, meicontext);
 
 	chained_irq_exit(chip, desc);
 }
