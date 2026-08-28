@@ -639,6 +639,11 @@ config RISCV_INTC
 	depends on RISCV
 	select IRQ_DOMAIN_HIERARCHY
 
+config RP2350_XH3IRQ
+	bool "RP2350 Xh3irq external interrupt controller"
+	depends on RISCV
+	select IRQ_DOMAIN_HIERARCHY
+
 config RISCV_APLIC
 	bool
 	depends on RISCV
