@@ -322,11 +322,11 @@ static __always_inline bool arch_atomic_dec_unless_positive(atomic_t *v)
 	do {
 		prev = READ_ONCE(v->counter);
 		if (prev > 0)
-			return true;
+			return false;
 		new = prev - 1;
 	} while (arch_cmpxchg(&v->counter, prev, new) != prev);
 
-	return false;
+	return true;
 }
 #else
 static __always_inline bool arch_atomic_dec_unless_positive(atomic_t *v)
