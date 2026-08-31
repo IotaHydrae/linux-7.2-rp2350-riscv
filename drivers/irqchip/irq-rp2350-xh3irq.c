@@ -43,6 +43,7 @@
 #define MEINEXT_IRQ_MASK	0x7fc
 #define MEINEXT_UPDATE		BIT(0)
 #define MEICONTEXT_CLEARTS	BIT(1)
+#define MEICONTEXT_NOIRQ	BIT(15)
 
 static struct irq_domain *xh3irq_domain;
 
@@ -115,9 +116,24 @@ static void xh3irq_handle_irq(struct irq_desc *desc)
 		generic_handle_domain_irq(xh3irq_domain, irq);
 	}
 
-	csr_write(RVCSR_MEICONTEXT, meicontext);
-
 	chained_irq_exit(chip, desc);
+
+	/*
+	 * Do not rely on the hardware mret pop (MEICONTEXT.MRETEIRQ): the
+	 * kernel's generic IRQ exit path after this C handler can execute
+	 * AMO/spinlock code on PSRAM, which faults and the emulation trap
+	 * clears MRETEIRQ, so the eventual mret would skip the pop and leave
+	 * PREEMPT stuck high, permanently gating every external interrupt
+	 * (observed: MEICONTEXT.PREEMPT=8, MEINEXT still shows irq 33, but
+	 * no MEIP trap ever fires again).
+	 *
+	 * We never re-enable interrupts inside this handler (no preemption),
+	 * so the hardware priority stack is at most one frame deep.  Write the
+	 * clean "outside handler" state directly (PREEMPT=0, MRETEIRQ=0,
+	 * NOIRQ=1) instead of restoring the entry value; the CSR write itself
+	 * also restores the MTIE/MSIE state saved by CLEARTS.
+	 */
+	csr_write(RVCSR_MEICONTEXT, MEICONTEXT_NOIRQ);
 }
 
 static int xh3irq_domain_map(struct irq_domain *d, unsigned int irq,
